@@ -100,15 +100,18 @@ func GenerateTestCase(funcDecl *ast.FuncDecl, mutationIDs []uint, packageName st
 	originalResultVarsAssignment := originalResultVars + " := "
 	mutatedResultVarsAssignment := mutatedResultVars + " := "
 
-	returnValueCheckParameters := originalResultVars + ", " + mutatedResultVars
-
 	paramTypes := ps.getCommaSeparatedTypes()
 	returnTypesString := strings.Join(returnTypes, ", ")
 
+	fmt.Println("Printing params")
+	fmt.Println(ps.getCommaSeparatedNameTypePairs())
+
 	paramNameTypePairs := ps.getCommaSeparatedNameTypePairs()
-	_ = paramNameTypePairs
 
 	params := ps.getCommaSeparatedNames()
+
+	returnValueCheckParameters := originalResultVars + ", " + mutatedResultVars + ", " + params
+
 	var returnValuesParamTypePairs string
 
 	for _, resultParam := range originalResults {
@@ -122,6 +125,8 @@ func GenerateTestCase(funcDecl *ast.FuncDecl, mutationIDs []uint, packageName st
 			returnValuesParamTypePairs += ", "
 		}
 	}
+
+	returnValuesParamTypePairs += ", " + paramNameTypePairs
 
 	var mutationFunctions string
 

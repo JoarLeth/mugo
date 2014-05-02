@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build"
+	"go/format"
 	"go/parser"
-	"go/printer"
+	//"go/printer"
+	"flag"
 	"go/token"
 	"io"
-	"io/ioutil"
+	//"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
@@ -49,6 +51,8 @@ func (v *Visitor) Visit(node ast.Node) ast.Visitor {
 	mutations.MutateLogicalOperators(node, v.writeMutation)
 	mutations.MutateArithmeticOperators(node, v.writeMutation)
 	mutations.MutateBitwiseOperators(node, v.writeMutation)
+
+	mutations.OmitFunctionCalls(node, v.file, v.writeMutation)
 	return v
 }
 
@@ -72,34 +76,64 @@ func stringInSlice(a string, list []string) bool {
 	return false
 }
 
+var package_name string
+var mutation_dir string
+
+func init() {
+	flag.StringVar(&package_name, "pkg", "", "The package to mutate")
+	flag.StringVar(&mutation_dir, "dst", "mugo", "The destination. The specified directory will be created and used for mutation. This should be a directory on your GOPATH.")
+}
+
 func main() {
-	name := "github.com/joarleth/slask"
-	// name := "sort"
-	pkg, err := build.Import(name, "", 0)
+
+	flag.Parse()
+	if package_name == "" {
+		fmt.Println("Must specify package.")
+		flag.Usage()
+		os.Exit(0)
+	}
+	//name := "strings"
+	pkg, err := build.Import(package_name, "", 0)
 	if err != nil {
-		fmt.Printf("%v", fmt.Errorf("could not import %s: %s", name, err))
+		fmt.Printf("%v", fmt.Errorf("could not import %s: %s", package_name, err))
 	}
 
-	tmpDir, err := ioutil.TempDir("", "mugo")
+	//tmpDir, err := ioutil.TempDir("", "mugo")
+	if !path.IsAbs(mutation_dir) {
+		working_dir, err := os.Getwd()
+		if err != nil {
+			fmt.Errorf("%s", err)
+			os.Exit(1)
+		}
+		mutation_dir = filepath.Join(working_dir, mutation_dir)
+	}
+
+	mkerr := os.Mkdir(mutation_dir, os.ModePerm)
+
+	if mkerr != nil {
+		fmt.Printf("%v", fmt.Errorf("Could not create directory for for mutation: %s", mkerr))
+		os.Exit(1)
+	}
 
 	if err != nil {
 		fmt.Printf("%v", fmt.Errorf("could not create temporary directory: %s", err))
 	}
 
-	origDir := path.Join(tmpDir, "original")
-	mkerr := os.Mkdir(origDir, os.ModePerm)
+	origDir := path.Join(mutation_dir, "original")
+	mkerr = os.Mkdir(origDir, os.ModePerm)
 
 	if mkerr != nil {
 		fmt.Printf("%v", fmt.Errorf("could not create directory original: %s", mkerr))
 	}
 
-	fmt.Fprintf(os.Stderr, "using %s as a temporary directory\n", tmpDir)
+	fmt.Fprintf(os.Stderr, "using %s as a temporary directory\n", mutation_dir)
 	if err := copyDir(pkg.Dir, origDir); err != nil {
 		fmt.Printf("%v", fmt.Errorf("could not copy package directory: %s", err))
 	}
 
-	v := &Visitor{origDir: origDir, tmpDir: tmpDir, mutationID: 1}
+	v := &Visitor{origDir: origDir, tmpDir: mutation_dir, mutationID: 1}
 
+	// TODO: Consider using parser.ParseDir instead to porse all go files in a directory.
 	for _, f := range pkg.GoFiles {
 		v.fileName = f
 		mutateFile(v)
@@ -113,7 +147,7 @@ func writeTestCases(v *Visitor) {
 		if fd, ok := d.(*ast.FuncDecl); ok {
 			if fd.Name.Name != "main" { // init is not package wide. Each file is allowed one.
 
-				file, fset := testcase.GenerateTestCase(fd, v.liveMutationIDs, "slask")
+				file, fset := testcase.GenerateTestCase(fd, v.liveMutationIDs, v.file.Name.Name)
 
 				extension := filepath.Ext(v.fileName)
 				name := strings.TrimRight(v.fileName, extension)
@@ -132,11 +166,11 @@ func writeTestCases(v *Visitor) {
 
 				printAST(testCaseFilePath, fset, file)
 
-				if fd.Name.Name == "Multiply" {
-					symLinkName := filepath.Join(v.origDir, testCaseFileName)
+				//if fd.Name.Name == "Multiply" {
+				symLinkName := filepath.Join(v.origDir, testCaseFileName)
 
-					os.Symlink(testCaseFilePath, symLinkName)
-				}
+				os.Symlink(testCaseFilePath, symLinkName)
+				//}
 			}
 		}
 	}
@@ -144,7 +178,7 @@ func writeTestCases(v *Visitor) {
 }
 
 func (v *Visitor) writeMutation() {
-	dirName := fmt.Sprintf("mutation%d", v.mutationID)
+	dirName := fmt.Sprintf("mutant%d", v.mutationID)
 
 	/*if err := copyDir(v.origDir, mutDir); err != nil {
 		fmt.Printf("%v", fmt.Errorf("could not copy original directory: %s", err))
@@ -178,11 +212,14 @@ func (v *Visitor) writeMutation() {
 
 		extension := filepath.Ext(v.fileName)
 		name := strings.TrimRight(v.fileName, extension)
-		mutFileName := fmt.Sprintf("%s%s%d%s", name, "mutation", v.mutationID, extension)
+		mutFileName := fmt.Sprintf("%s%s%06d%s", name, "mutant", v.mutationID, extension)
 
 		symLinkName := filepath.Join(v.origDir, mutFileName)
 
+		// TODO: Fińd out why this causes failed symlinks...
 		os.Symlink(mutFile, symLinkName)
+		fmt.Println(mutFile)
+		fmt.Println(symLinkName)
 
 		copyFile(srcFile, mutDir)
 	}
@@ -219,6 +256,10 @@ func renameGlobalFuncs(mutDir, fileName string, mutationID uint) {
 		if gd, ok := d.(*ast.GenDecl); ok {
 			if ts, ok := gd.Specs[0].(*ast.TypeSpec); ok {
 				ts.Name.Name = fmt.Sprintf("%s%s%d", ts.Name.Name, "Mutant", mutationID)
+			} else if vs, ok := gd.Specs[0].(*ast.ValueSpec); ok {
+				for i, name := range vs.Names {
+					vs.Names[i].Name = fmt.Sprintf("%s%s%d", name.Name, "Mutant", mutationID)
+				}
 			}
 		}
 	}
@@ -233,14 +274,16 @@ func runTests(dir string, id uint, v *Visitor) (killed bool) {
 	//args = append(args, testFlags...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	_, err := cmd.CombinedOutput()
+	co, err := cmd.CombinedOutput()
+
+	fmt.Println(string(co))
+
 	if err == nil {
 		message := fmt.Sprintf("Mutant %d still alive", id)
 		v.liveMutationIDs = append(v.liveMutationIDs, id)
 		fmt.Println(message)
 
 		return false
-
 	} else if _, ok := err.(*exec.ExitError); ok {
 		message := fmt.Sprintf("Mutant %d was killed or crashed", id)
 		fmt.Println(message)
@@ -278,7 +321,11 @@ func printAST(path string, fset *token.FileSet, node interface{}) error {
 	}
 	defer out.Close()
 
-	if err := printer.Fprint(out, fset, node); err != nil {
+	// if err := printer.Fprint(out, fset, node); err != nil {
+	// 	return fmt.Errorf("could not print %s: %s", path, err)
+	// }
+
+	if err := format.Node(out, fset, node); err != nil {
 		return fmt.Errorf("could not print %s: %s", path, err)
 	}
 	return nil
