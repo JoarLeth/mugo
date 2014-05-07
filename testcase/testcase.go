@@ -114,12 +114,12 @@ func GenerateTestCase(funcDecl *ast.FuncDecl, mutationIDs []uint, packageName st
 
 	var returnValuesParamTypePairs string
 
-	for _, resultParam := range originalResults {
-		returnValuesParamTypePairs += fmt.Sprintf("%s %s, ", resultParam, returnTypes[0])
+	for i, resultParam := range originalResults {
+		returnValuesParamTypePairs += fmt.Sprintf("%s %s, ", resultParam, returnTypes[i])
 	}
 
 	for i, resultParam := range mutatedResults {
-		returnValuesParamTypePairs += fmt.Sprintf("%s %s", resultParam, returnTypes[0])
+		returnValuesParamTypePairs += fmt.Sprintf("%s %s", resultParam, returnTypes[i])
 
 		if i != len(mutatedResults)-1 {
 			returnValuesParamTypePairs += ", "

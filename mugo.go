@@ -17,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/joarleth/mugo/mutations"
 	"github.com/joarleth/mugo/testcase"
@@ -216,10 +217,7 @@ func (v *Visitor) writeMutation() {
 
 		symLinkName := filepath.Join(v.origDir, mutFileName)
 
-		// TODO: Fińd out why this causes failed symlinks...
 		os.Symlink(mutFile, symLinkName)
-		fmt.Println(mutFile)
-		fmt.Println(symLinkName)
 
 		copyFile(srcFile, mutDir)
 	}
@@ -270,29 +268,62 @@ func renameGlobalFuncs(mutDir, fileName string, mutationID uint) {
 }
 
 func runTests(dir string, id uint, v *Visitor) (killed bool) {
+	// Continue if stuck in endless loop or similar
+	done := make(chan error)
+
 	args := []string{"test"}
-	//args = append(args, testFlags...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	co, err := cmd.CombinedOutput()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Start()
 
-	fmt.Println(string(co))
+	// stdout, err := cmd.StdoutPipe()
+	// if err != nil {
+	// 	fmt.Println(err)
+	// }
 
-	if err == nil {
-		message := fmt.Sprintf("Mutant %d still alive", id)
-		v.liveMutationIDs = append(v.liveMutationIDs, id)
-		fmt.Println(message)
+	//args = append(args, testFlags...)
+	go func() {
+		done <- cmd.Wait()
+	}()
 
-		return false
-	} else if _, ok := err.(*exec.ExitError); ok {
-		message := fmt.Sprintf("Mutant %d was killed or crashed", id)
-		fmt.Println(message)
+	select {
+	case <-time.After(10 * time.Second):
+		if err := cmd.Process.Kill(); err != nil {
+			fmt.Println("Failed to kill: ", err)
+		}
+		<-done // allow goroutine to exit
+		fmt.Println("Mutant", v.mutationID, "timed out")
+
+		// Should it be considered killed? Might be better to save it to separate timedout dir.
 		return true
+	case err := <-done:
+		if err == nil {
+			v.liveMutationIDs = append(v.liveMutationIDs, id)
+			fmt.Println(fmt.Sprintf("Mutant %d still alive", id))
 
-	} else {
-		fmt.Errorf("\nMutant %d failed to run tests: %s\n", id, err)
-		return false
+			return false
+		} else if _, ok := err.(*exec.ExitError); ok {
+			message := fmt.Sprintf("Mutant %d was killed or crashed", id)
+			fmt.Println(message)
+			return true
+
+		} else {
+			fmt.Errorf("\nMutant %d failed to run tests: %s\n", id, err)
+			return false
+		}
 	}
+
+	// Sould never get here
+	return false
+
+	//co, err := cmd.CombinedOutput()
+
+	//fmt.Println(string(co))
+
+	//_, err := cmd.StdoutPipe()
+
 }
 
 func mutateFile(v *Visitor) {
